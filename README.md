@@ -444,6 +444,7 @@ If you use A3 in your research, please cite:
 @article{a3_2024,
   title={A3: An Automated Alignment Agent for Safety Finetuning},
   author={Jifan Zhang, Henry Sleight, Joe Benton},
+  journal={Anthropic Research},
   year={2026}
 }
 ```
