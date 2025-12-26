@@ -1,0 +1,3 @@
+[submodule "bloom-evals"]
+	path = bloom-evals
+	url = git@github.com:safety-research/bloom.git
