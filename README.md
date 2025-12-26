@@ -421,12 +421,12 @@ python scripts/generate_dolci_responses.py \
 ### False Positive Rate (FPR) / Refusal Rate
 - **Lower is better** for benign prompts
 - Measures how often the model incorrectly refuses legitimate queries
-- Target: < 5%
+- Target: minimize as much as possible subject to the constraints in the other two metrics.
 
 ### Benchmark Scores (MMLU-Pro, GPQA)
 - **Higher is better**
 - Measures general capabilities preservation
-- Target: Minimal degradation from baseline (< 1%)
+- Target: < 1% degradation from base model
 
 ## Supported Safety Issues
 

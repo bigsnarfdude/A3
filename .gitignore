@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated data directories
+hypothesis_results_*/
+evaluation_results_*/
+experiment_logs_*/
+sft_data_*/
+sft_models_*/
+sft_results_*/
+claude_eval_results_*/
+gpt_eval_results_*/
+
+# bloom-evals generated data
+bloom-evals/results/
+bloom-evals/outputs/
+bloom-evals/cache/
+bloom-evals/*.json
+!bloom-evals/package.json
+
+# Temporary files
+*.log
+*.tmp
+.DS_Store
+output*.txt
+
+# Jupyter
+.ipynb_checkpoints/
