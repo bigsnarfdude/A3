@@ -6,9 +6,9 @@ A3 is an agentic framework that automatically corrects safety risks in existing 
 
 The A3 pipeline consists of three main components:
 
-1. **Data Generation Agent**: Takes a seed example of unsafe behavior and adaptively generates hypotheses about what triggers the unsafe behavior. For each hypothesis, it creates both harmful queries (expected to trigger unsafe behavior) and benign counterparts (legitimate queries that should be answered normally).
+1. **Data Generation Agent**: Takes a seed example of unsafe behavior and adaptively generates hypotheses about what triggers the unsafe behavior. For each hypothesis, it creates both harmful queries (expected to trigger unsafe behavior) and benign counterparts (legitimate queries that should be answered normally). The benign queries are used to prevent elevation in false positive responses.
 
-2. **Finetuning Agent**: Performs iterative Supervised Fine-Tuning (SFT) with LoRA, adaptively selecting hyperparameters and data weightings based on validation performance. The agent balances reducing unsafe behavior against preventing catastrophic forgetting.
+2. **Finetuning Agent**: Performs Supervised Fine-Tuning (SFT) with LoRA and automatically selects hyperparameters and data weightings based on validation performance. The agent balances reducing unsafe behavior against preventing catastrophic forgetting.
 
 3. **Experiment Log**: A central document that tracks all hypotheses, their success rates, and training results. This enables the agent to make informed decisions about data generation and training strategies.
 
@@ -18,7 +18,7 @@ The A3 pipeline consists of three main components:
 
 ```bash
 pip install anthropic openai requests torch transformers peft accelerate
-pip install dspy-ai  # Optional: for DSPy defense method
+pip install dspy-ai  # Optional: for DSPy defense method (https://github.com/stanfordnlp/dspy)
 ```
 
 ### Environment Variables
@@ -51,7 +51,7 @@ python scripts/step2_evaluation.py --config-file configs/sycophancy-llama.json
 # Step 3: Generate expected behaviors for training
 python scripts/step3_generate_expected_behaviors.py --config-file configs/sycophancy-llama.json
 
-# Step 4: Run iterative SFT with LoRA
+# Step 4: Run SFT with LoRA
 python scripts/step4_sft_agent.py --config-file configs/sycophancy-llama.json
 ```
 
@@ -156,10 +156,27 @@ Configuration for the model being fixed.
 | Field | Type | Description |
 |-------|------|-------------|
 | `base_url` | string | API endpoint (e.g., "https://openrouter.ai/api/v1") |
-| `model_name` | string | Model identifier (e.g., "meta-llama/llama-3.1-8b-instruct") |
+| `model_name` | string | Model identifier for API calls (e.g., "meta-llama/llama-3.1-8b-instruct") |
+| `huggingface_model_path` | string | HuggingFace model path for local loading/fine-tuning (e.g., "meta-llama/Llama-3.1-8B-Instruct") |
 | `max_tokens` | int | Maximum tokens for model responses |
 | `temperature` | float | Sampling temperature |
 | `request_timeout` | int | Request timeout in seconds |
+| `icl_eval_model` | string | Model for ICL evaluation (usually same as model_name) |
+
+**Note:** The `model_name` field is the model identifier used for API calls (e.g., OpenRouter), while `huggingface_model_path` is used for local model loading during SFT training and benchmark evaluation. These may have different formats - for example, OpenRouter uses `qwen/qwen-2.5-7b-instruct` while HuggingFace uses `Qwen/Qwen2.5-7B-Instruct`.
+
+**Example:**
+```json
+"target_model": {
+  "base_url": "https://openrouter.ai/api/v1",
+  "model_name": "meta-llama/llama-3.1-8b-instruct",
+  "huggingface_model_path": "meta-llama/Llama-3.1-8B-Instruct",
+  "max_tokens": 1000,
+  "temperature": 0.7,
+  "request_timeout": 240,
+  "icl_eval_model": "meta-llama/llama-3.1-8b-instruct"
+}
+```
 
 #### `judge_model`
 Configuration for the judge model (typically Claude).
@@ -313,9 +330,9 @@ python scripts/run_icl_defense.py --config-file configs/sycophancy-llama.json \
 | `--num-icl-examples` | 20 | Number of ICL examples to select |
 | `--trial` | 1 | Trial number for reproducibility |
 
-### DSPy Defense (`run_dspy_defense.py`)
+### [DSPy](https://github.com/stanfordnlp/dspy) Defense (`run_dspy_defense.py`)
 
-Uses DSPy with GEPA optimizer to learn optimal safety prompts.
+Uses DSPy with [GEPA](https://arxiv.org/abs/2507.19457) optimizer to learn optimal safety prompts.
 
 ```bash
 python scripts/run_dspy_defense.py --config-file configs/sycophancy-llama.json
@@ -334,6 +351,47 @@ python scripts/run_dspy_defense.py --config-file configs/sycophancy-llama.json \
 |------|---------|-------------|
 | `--auto` | medium | Optimization intensity: light, medium, heavy |
 | `--max-train-samples` | None | Limit training samples (for testing) |
+
+### Fixed Mixing Baseline (`run_sft_with_fixed_mixing.py`)
+
+Runs SFT training with fixed data mixing ratios as a baseline comparison. Trains models with 5 different harmful/benign ratios to study the effect of data composition.
+
+```bash
+# Run all 5 configurations (uses LoRA by default)
+python scripts/run_sft_with_fixed_mixing.py --config-file configs/sycophancy-llama.json
+
+# Disable LoRA for full fine-tuning
+python scripts/run_sft_with_fixed_mixing.py --config-file configs/sycophancy-llama.json --no-lora
+
+# Custom model path
+python scripts/run_sft_with_fixed_mixing.py --config-file configs/sycophancy-llama.json \
+  --model-name-or-path meta-llama/Llama-3.1-8B-Instruct
+```
+
+The script runs all 5 configurations sequentially:
+- 10% harmful / 90% benign
+- 30% harmful / 70% benign
+- 50% harmful / 50% benign
+- 70% harmful / 30% benign
+- 90% harmful / 10% benign
+
+All configurations use 15% DOLCI mixing for capability retention.
+
+**Options:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model-name-or-path` | (from config) | HuggingFace model path |
+| `--epochs` | 5 | Number of training epochs |
+| `--batch-size` | 2 | Batch size per device |
+| `--no-lora` | False | Disable LoRA (full fine-tuning) |
+| `--lora-r` | 64 | LoRA rank |
+| `--lora-alpha` | 256 | LoRA alpha |
+| `--target-size` | auto | Target dataset size |
+| `--seed` | 42 | Random seed |
+
+**Outputs:**
+- `sft_models_{behavior}_{model}_dolci15_harmful{X}_benign{Y}/` - Model checkpoints for each configuration
+- `sft_results_{behavior}_{model}_all_configs/` - Combined results JSON
 
 ## Evaluation Scripts
 
@@ -383,7 +441,7 @@ A3/
 
 ## Generating Custom DOLCI Responses
 
-The SFT training mixes in general instruction data from the DOLCI dataset to prevent catastrophic forgetting. To maintain the target model's response style, we use pre-generated responses from the same model family.
+The SFT training mixes in general instruction data from the [DOLCI dataset](https://huggingface.co/datasets/allenai/Dolci-Instruct-SFT) to prevent catastrophic forgetting. To maintain the target model's response style, we use pre-generated responses from the same model family.
 
 Pre-generated response files are provided for Qwen and Llama models. To generate responses for a different model:
 
@@ -423,10 +481,48 @@ python scripts/generate_dolci_responses.py \
 - Measures how often the model incorrectly refuses legitimate queries
 - Target: minimize as much as possible subject to the constraints in the other two metrics.
 
-### Benchmark Scores (MMLU-Pro, GPQA)
+### Benchmark Scores (MMLU-Pro, [GPQA](https://arxiv.org/abs/2311.12022))
 - **Higher is better**
 - Measures general capabilities preservation
 - Target: < 1% degradation from base model
+
+## Adding New Models
+
+We provide example config files that use both Qwen 2.5 7B and LLAMA 3.1 8B models. To add support for a new model, create a new config file with the appropriate model settings:
+
+### 1. Find the model identifiers
+
+You'll need two model identifiers:
+- **API model name**: The identifier used by your API provider (e.g., OpenRouter)
+- **HuggingFace model path**: The path for local model loading from HuggingFace Hub
+
+### 2. Create a config file
+
+Copy an existing config and update the `target_model` section:
+
+```json
+"target_model": {
+  "base_url": "https://openrouter.ai/api/v1",
+  "model_name": "mistralai/mistral-7b-instruct",
+  "huggingface_model_path": "mistralai/Mistral-7B-Instruct-v0.3",
+  "max_tokens": 1000,
+  "temperature": 0.7,
+  "request_timeout": 240,
+  "icl_eval_model": "mistralai/mistral-7b-instruct"
+}
+```
+
+### 3. Generate DOLCI responses (optional but recommended)
+
+For best capability retention, generate model-specific DOLCI responses. See [Generating Custom DOLCI Responses](#generating-custom-dolci-responses) for details.
+
+### Common Model Identifiers
+
+| Model | OpenRouter (model_name) | HuggingFace (huggingface_model_path) |
+|-------|------------------------|--------------------------------------|
+| Llama 3.1 8B | `meta-llama/llama-3.1-8b-instruct` | `meta-llama/Llama-3.1-8B-Instruct` |
+| Qwen 2.5 7B | `qwen/qwen-2.5-7b-instruct` | `Qwen/Qwen2.5-7B-Instruct` |
+| Mistral 7B | `mistralai/mistral-7b-instruct` | `mistralai/Mistral-7B-Instruct-v0.3` |
 
 ## Supported Safety Issues
 

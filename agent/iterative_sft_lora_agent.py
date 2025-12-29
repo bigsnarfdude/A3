@@ -169,6 +169,8 @@ class IterativeLoRASFTAgent:
 1. Reduce aggregated attack success rates (ASR) for validation and OOD sets below 5%
 2. Minimize benign refusal rates
 3. **CRITICAL: Ensure MMLU-Pro and GPQA performance does NOT degrade more than 1% from baseline**
+When 1 and 3 cannot be satisfied at the same time, you should prioritize satisfying 3, while minimizing the attack success rate. 
+In this case, you do not need to worry about the benign refusal rates.
 
 **Training Budget Information**:
 - Training examples per epoch: {self.training_budget}
@@ -181,7 +183,7 @@ LORA HYPERPARAMETER SELECTION
 
 You must select the following LoRA hyperparameters:
 
-**1. LoRA Rank (lora_r)** - Range: 16 to 128, recommended values: 16, 32, 64, 128
+**1. LoRA Rank (lora_r)** - Range: 8 to 128, recommended values: 8, 16, 32, 64, 128
 A larger rank helps the model to learn more about what's safe and what's unsafe, improving both the harmful ASR and benign refusal rates. You should choose a rank as large as possible, but with the constraint that the model does not degrade more than 1% from the baseline MMLU-Pro and GPQA benchmarks. 
 
 **2. LoRA Alpha (lora_alpha)**
@@ -866,27 +868,28 @@ Then return ONLY the valid JSON.
                 print(f"\nLoading pre-generated responses from: {dolci_responses_file}")
                 try:
                     with open(dolci_responses_file, 'r') as f:
-                        qwen_responses_data = json.load(f)
+                        dolci_responses_data = json.load(f)
 
-                    print(f"Loaded {len(qwen_responses_data)} pre-generated responses")
+                    print(f"Loaded {len(dolci_responses_data)} pre-generated responses")
 
-                    # Randomly sample dolci_count examples from Qwen responses
-                    if len(qwen_responses_data) < dolci_count:
-                        print(f"⚠ Warning: Qwen responses file has only {len(qwen_responses_data)} examples, requested {dolci_count}")
-                        dolci_count = len(qwen_responses_data)
+                    # Randomly sample dolci_count examples
+                    if len(dolci_responses_data) < dolci_count:
+                        print(f"⚠ Warning: DOLCI responses file has only {len(dolci_responses_data)} examples, requested {dolci_count}")
+                        dolci_count = len(dolci_responses_data)
 
                     # Sample with reproducible random seed
-                    dolci_indices = np.random.choice(len(qwen_responses_data), size=dolci_count, replace=False)
+                    dolci_indices = np.random.choice(len(dolci_responses_data), size=dolci_count, replace=False)
 
                     for idx in dolci_indices:
-                        qwen_sample = qwen_responses_data[int(idx)]
+                        dolci_sample = dolci_responses_data[int(idx)]
 
-                        # Get the messages (prompt) and Qwen response
-                        messages = qwen_sample.get('messages', [])
-                        qwen_response = qwen_sample.get('qwen_response', '')
+                        # Get the messages (prompt) and model response
+                        # Try model_response first, fall back to qwen_response for backward compat
+                        messages = dolci_sample.get('messages', [])
+                        model_response = dolci_sample.get('model_response') or dolci_sample.get('qwen_response', '')
 
-                        if not messages or not qwen_response:
-                            print(f"⚠ Warning: Invalid Qwen response format at index {idx}, skipping")
+                        if not messages or not model_response:
+                            print(f"⚠ Warning: Invalid response format at index {idx}, skipping")
                             continue
 
                         # Skip function-calling examples where content is None
@@ -894,16 +897,16 @@ Then return ONLY the valid JSON.
                         if has_none_content:
                             continue
 
-                        # Append Qwen's response to create complete conversation
-                        full_messages = messages + [{"role": "assistant", "content": qwen_response}]
+                        # Append model response to create complete conversation
+                        full_messages = messages + [{"role": "assistant", "content": model_response}]
 
                         training_data.append({"messages": full_messages})
                         dolci_sampled_count += 1
 
-                    print(f"✓ Added {dolci_sampled_count} Dolci samples with Qwen responses to training data")
+                    print(f"✓ Added {dolci_sampled_count} Dolci samples with pre-generated responses to training data")
 
                 except Exception as e:
-                    print(f"⚠ Warning: Failed to load Qwen responses file: {e}")
+                    print(f"⚠ Warning: Failed to load DOLCI responses file: {e}")
                     print(f"Falling back to original Dolci dataset...")
                     dolci_responses_file = None  # Fall back to original method
 

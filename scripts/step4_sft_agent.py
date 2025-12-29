@@ -200,8 +200,17 @@ Training Process:
     model_name = attack_config.target_model.get_model_name_for_files()
     behavior_key = attack_config.attack.key
 
-    # Get model from config or command line
-    model_name_or_path = args.model_name_or_path or attack_config.target_model.model_name
+    # Determine model path: CLI override > config huggingface_model_path
+    if args.model_name_or_path:
+        model_name_or_path = args.model_name_or_path
+    else:
+        # Use huggingface_model_path from config
+        try:
+            model_name_or_path = attack_config.target_model.get_huggingface_path()
+        except ValueError as e:
+            print(f"Error: {e}")
+            print("You can also specify --model-name-or-path on the command line")
+            sys.exit(1)
 
     print(f"Attack: {attack_config.attack.name} ({behavior_key})")
     print(f"Target model: {model_name_or_path}")

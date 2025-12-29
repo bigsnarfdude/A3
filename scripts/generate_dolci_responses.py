@@ -199,8 +199,8 @@ def process_single_sample(
     elif 'response' in sample:
         original_response = sample['response']
 
-    # Generate new response with Qwen
-    qwen_response = call_qwen_openrouter(
+    # Generate new response with model
+    model_response = call_qwen_openrouter(
         messages=messages,
         api_key=api_key,
         model=model,
@@ -208,15 +208,16 @@ def process_single_sample(
         max_tokens=max_tokens
     )
 
-    if qwen_response is None:
+    if model_response is None:
         return None
 
-    # Store result
+    # Store result with generic key name (for backward compat, also include qwen_response)
     return {
         "index": idx,
         "messages": messages,
         "original_response": original_response,
-        "qwen_response": qwen_response
+        "model_response": model_response,
+        "qwen_response": model_response  # Backward compatibility
     }
 
 

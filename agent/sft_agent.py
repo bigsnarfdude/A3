@@ -49,9 +49,9 @@ class SFTConfig:
 
     # FSDP settings
     # Note: FSDP is automatically disabled when use_lora=True (DDP is faster for LoRA)
+    # The transformer layer class is auto-detected in sft_training_script.py based on model architecture
     fsdp_enabled: bool = True
     fsdp_config: Dict[str, Any] = field(default_factory=lambda: {
-        "fsdp_transformer_layer_cls_to_wrap": ["Qwen2DecoderLayer"],
         "fsdp_sharding_strategy": "FULL_SHARD",
         "fsdp_state_dict_type": "FULL_STATE_DICT",
         "fsdp_offload_params": False,

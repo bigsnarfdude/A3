@@ -205,9 +205,29 @@ def main():
     if is_distributed and not args.disable_fsdp and not args.use_lora:
         if local_rank == 0:
             print("Enabling FSDP for full fine-tuning (distributed training)...")
+
+        # Determine the transformer layer class based on model architecture
+        model_name_lower = args.model_name.lower()
+        if "llama" in model_name_lower:
+            transformer_layer_cls = "LlamaDecoderLayer"
+        elif "qwen" in model_name_lower:
+            transformer_layer_cls = "Qwen2DecoderLayer"
+        elif "mistral" in model_name_lower:
+            transformer_layer_cls = "MistralDecoderLayer"
+        elif "gemma" in model_name_lower:
+            transformer_layer_cls = "GemmaDecoderLayer"
+        else:
+            # Default fallback - try to infer from model config
+            transformer_layer_cls = "LlamaDecoderLayer"
+            if local_rank == 0:
+                print(f"  Warning: Unknown model architecture, defaulting to {transformer_layer_cls}")
+
+        if local_rank == 0:
+            print(f"  Using transformer layer class: {transformer_layer_cls}")
+
         config_kwargs["fsdp"] = "full_shard auto_wrap"
         config_kwargs["fsdp_config"] = {
-            "transformer_layer_cls_to_wrap": ["Qwen2DecoderLayer"],
+            "transformer_layer_cls_to_wrap": [transformer_layer_cls],
             "activation_checkpointing": True
         }
         config_kwargs["gradient_checkpointing"] = False

@@ -79,19 +79,45 @@ class ConversationFormat:
 
 @dataclass
 class TargetModelConfig:
-    """Target model configuration."""
+    """Target model configuration.
+
+    Attributes:
+        base_url: API endpoint URL (e.g., OpenRouter)
+        model_name: Model identifier for API calls (e.g., "qwen/qwen-2.5-7b-instruct")
+        huggingface_model_path: HuggingFace model path for local loading/fine-tuning
+                               (e.g., "Qwen/Qwen2.5-7B-Instruct")
+        max_tokens: Maximum tokens to generate
+        temperature: Sampling temperature
+        request_timeout: API request timeout in seconds
+        icl_eval_model: Model to use for ICL evaluation (usually same as model_name)
+    """
     base_url: str
     model_name: str
     max_tokens: int
     temperature: float
     request_timeout: int
     icl_eval_model: str
+    huggingface_model_path: Optional[str] = None  # HuggingFace model path for SFT/benchmarks
 
     def get_model_name_for_files(self) -> str:
         """Get a clean model name for use in filenames."""
         name = self.model_name.split("/")[-1]
         name = name.replace("/", "-").replace("_", "-")
         return name
+
+    def get_huggingface_path(self) -> str:
+        """Get HuggingFace model path for local loading.
+
+        Returns huggingface_model_path if set, otherwise raises an error
+        prompting the user to add it to their config.
+        """
+        if self.huggingface_model_path:
+            return self.huggingface_model_path
+        raise ValueError(
+            f"huggingface_model_path not set in config for model '{self.model_name}'.\n"
+            f"Please add 'huggingface_model_path' to your target_model config section.\n"
+            f"Example: \"huggingface_model_path\": \"Qwen/Qwen2.5-7B-Instruct\""
+        )
 
 
 @dataclass
@@ -278,6 +304,7 @@ class AttackConfig:
             'target_model': {
                 'base_url': self.target_model.base_url,
                 'model_name': self.target_model.model_name,
+                'huggingface_model_path': self.target_model.huggingface_model_path,
                 'max_tokens': self.target_model.max_tokens,
                 'temperature': self.target_model.temperature,
                 'request_timeout': self.target_model.request_timeout,
