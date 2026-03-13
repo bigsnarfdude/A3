@@ -78,13 +78,14 @@ class TestTargetModel:
     ) -> None:
         self.target = target_config or TargetModelConfig()
         if not self.target.api_key:
-            # Determine which API key to use based on base_url
-            if "anthropic.com" in self.target.base_url:
+            # Local vLLM — no API key needed
+            if "localhost" in self.target.base_url or "127.0.0.1" in self.target.base_url:
+                self.target.api_key = "not-needed"
+            elif "anthropic.com" in self.target.base_url:
                 self.target.api_key = os.getenv("ANTHROPIC_API_KEY", "")
                 if not self.target.api_key:
                     raise RuntimeError("ANTHROPIC_API_KEY environment variable is required for Anthropic models")
             else:
-                # Default to OpenRouter for other providers
                 self.target.api_key = os.getenv("OPENROUTER_API_KEY", "")
                 if not self.target.api_key:
                     raise RuntimeError("OPENROUTER_API_KEY environment variable is required for OpenRouter models")
