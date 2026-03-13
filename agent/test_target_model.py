@@ -20,24 +20,6 @@ except ImportError:
 
 
 JUDGE_MODEL = "claude-sonnet-4-20250514"
-JUDGE_ENV_KEY = "ANTHROPIC_API_KEY"
-
-
-def _require_env(key: str) -> str:
-    value = os.getenv(key)
-    if not value:
-        raise RuntimeError(f"Environment variable {key} is required for anthropic access")
-    return value
-
-
-def _import_anthropic():
-    try:
-        import anthropic  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "anthropic Python package is required. Install with `pip install anthropic`"
-        ) from exc
-    return anthropic
 
 
 def _format_prompt_for_display(prompt: str | List[Dict[str, str]]) -> str:
@@ -108,8 +90,6 @@ class TestTargetModel:
                     raise RuntimeError("OPENROUTER_API_KEY environment variable is required for OpenRouter models")
         self.judge = judge_config or JudgeConfig()
         self.judge_prompts = judge_prompts  # Optional JudgePrompts from config
-        self._anthropic = _import_anthropic()
-        self._client = self._anthropic.Anthropic(api_key=_require_env(JUDGE_ENV_KEY))
 
         # Print retry configuration
         is_vllm = "localhost" in self.target.base_url or "127.0.0.1" in self.target.base_url
@@ -392,125 +372,29 @@ class TestTargetModel:
         )
 
     def judge_refusal(self, prompt: str | List[Dict[str, str]], response_text: str | None, debug: bool = False) -> Tuple[bool, str]:
-        """Judge if the model's response is a refusal."""
-        import time
-
-        max_retries = 20
-        retry_delay = 10
-
-        for attempt in range(max_retries):
-            try:
-                msg = self._client.messages.create(
-                    model=JUDGE_MODEL,
-                    max_tokens=self.judge.max_tokens,
-                    temperature=self.judge.temperature,
-                    system=self._judge_refusal_system(),
-                    messages=[{"role": "user", "content": self._judge_refusal_user(prompt, response_text)}],
-                )
-                break
-            except Exception as e:
-                # Check if it's a rate limit (429) or overloaded (529) error
-                error_str = str(e)
-                should_retry = False
-                error_type = "Unknown"
-
-                if "429" in error_str or "rate_limit" in error_str.lower():
-                    should_retry = True
-                    error_type = "Rate limit"
-                elif "529" in error_str or "overloaded" in error_str.lower():
-                    should_retry = True
-                    error_type = "Overloaded"
-
-                if should_retry and attempt < max_retries - 1:
-                    print(f"⚠ {error_type} error in judge_refusal (attempt {attempt + 1}/{max_retries})")
-                    print(f"  Waiting {retry_delay} seconds before retrying...")
-                    time.sleep(retry_delay)
-                else:
-                    # Re-raise if not retryable or max retries reached
-                    raise
-
-        text = ""
-        blocks = getattr(msg, "content", None)
-        if isinstance(blocks, list) and blocks:
-            for b in blocks:
-                t = getattr(b, "text", None)
-                if t:
-                    text += t
-        else:
-            text = str(msg)
-
+        """Judge if the model's response is a refusal. Uses claude -p."""
+        from .claude_pipe import judge_refusal as _judge_refusal
+        verdict = _judge_refusal(
+            self._judge_refusal_system(),
+            self._judge_refusal_user(prompt, response_text),
+        )
+        refused = bool(verdict.get("refused", False))
+        reason = str(verdict.get("reason", ""))
         if debug:
             print(f"\n=== REFUSAL JUDGE DEBUG ===")
-            print(f"Raw judge response: {text}")
+            print(f"Verdict: {verdict}")
             print(f"===========================\n")
-
-        refused = False
-        reason = ""
-        try:
-            data = json.loads(text)
-            refused = bool(data.get("refused", False))
-            reason = str(data.get("reason", ""))
-        except Exception as e:
-            if debug:
-                print(f"JSON parsing failed: {e}")
-            reason = text[:500]
         return refused, reason
 
     def judge_harmful(self, prompt: str | List[Dict[str, str]], response_text: str | None) -> Tuple[bool, str]:
-        """Judge if the model's response is harmful."""
-        import time
-
-        max_retries = 20
-        retry_delay = 10
-
-        for attempt in range(max_retries):
-            try:
-                msg = self._client.messages.create(
-                    model=JUDGE_MODEL,
-                    max_tokens=self.judge.max_tokens,
-                    temperature=self.judge.temperature,
-                    system=self._judge_system(),
-                    messages=[{"role": "user", "content": self._judge_user(prompt, response_text)}],
-                )
-                break
-            except Exception as e:
-                # Check if it's a rate limit (429) or overloaded (529) error
-                error_str = str(e)
-                should_retry = False
-                error_type = "Unknown"
-
-                if "429" in error_str or "rate_limit" in error_str.lower():
-                    should_retry = True
-                    error_type = "Rate limit"
-                elif "529" in error_str or "overloaded" in error_str.lower():
-                    should_retry = True
-                    error_type = "Overloaded"
-
-                if should_retry and attempt < max_retries - 1:
-                    print(f"⚠ {error_type} error in judge_harmful (attempt {attempt + 1}/{max_retries})")
-                    print(f"  Waiting {retry_delay} seconds before retrying...")
-                    time.sleep(retry_delay)
-                else:
-                    # Re-raise if not retryable or max retries reached
-                    raise
-
-        text = ""
-        blocks = getattr(msg, "content", None)
-        if isinstance(blocks, list) and blocks:
-            for b in blocks:
-                t = getattr(b, "text", None)
-                if t:
-                    text += t
-        else:
-            text = str(msg)
-        harmful = False
-        reason = ""
-        try:
-            data = json.loads(text)
-            harmful = bool(data.get("harmful", False))
-            reason = str(data.get("reason", ""))
-        except Exception:
-            reason = text[:500]
+        """Judge if the model's response is harmful. Uses claude -p."""
+        from .claude_pipe import judge_harmful as _judge_harmful
+        verdict = _judge_harmful(
+            self._judge_system(),
+            self._judge_user(prompt, response_text),
+        )
+        harmful = bool(verdict.get("harmful", False))
+        reason = str(verdict.get("reason", ""))
         return harmful, reason
 
     async def _process_single_prompt_async(

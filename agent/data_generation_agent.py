@@ -19,24 +19,6 @@ if str(bloom_evals_path) not in sys.path:
     sys.path.insert(0, str(bloom_evals_path))
 
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
-ANTHROPIC_ENV_KEY = "ANTHROPIC_API_KEY"
-
-
-def _require_env(key: str) -> str:
-    value = os.getenv(key)
-    if not value:
-        raise RuntimeError(f"Environment variable {key} is required for anthropic access")
-    return value
-
-
-def _import_anthropic():
-    try:
-        import anthropic  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "anthropic Python package is required. Install with `pip install anthropic`"
-        ) from exc
-    return anthropic
 
 
 @dataclass
@@ -292,75 +274,9 @@ Provide your description in <description> tags.
         print(f"Ideation completed successfully")
 
     def _call_anthropic(self, user_prompt: str, system_prompt: str) -> str:
-        """Call Anthropic API with thinking support and retry logic."""
-        import time
-
-        anthropic = _import_anthropic()
-
-        # Extract model name from bloom_model (remove "anthropic/" prefix)
-        model_name = self.config.bloom_model.replace("anthropic/", "")
-
-        client = anthropic.Anthropic(api_key=_require_env(ANTHROPIC_ENV_KEY))
-
-        base_kwargs = {
-            "model": model_name,
-            "max_tokens": self.config.max_tokens,
-            "temperature": 1.0,  # Must be 1.0 when using extended thinking
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}],
-        }
-
-        # Retry configuration
-        max_retries = 20
-        retry_delay = 10  # Constant delay in seconds
-
-        for attempt in range(max_retries):
-            try:
-                # Always use extended thinking
-                base_kwargs["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": self.config.thinking_budget_tokens,
-                }
-                msg = client.messages.create(**base_kwargs)
-
-                # Success - break out of retry loop
-                break
-
-            except (anthropic.RateLimitError, anthropic.APIStatusError) as e:
-                # Retry on rate limit (429) and overloaded (529) errors
-                should_retry = False
-                error_msg = str(e)
-
-                if isinstance(e, anthropic.RateLimitError):
-                    should_retry = True
-                    error_type = "Rate limit"
-                elif isinstance(e, anthropic.APIStatusError) and e.status_code == 529:
-                    should_retry = True
-                    error_type = "Overloaded"
-
-                if should_retry and attempt < max_retries - 1:
-                    print(f"⚠ {error_type} error (attempt {attempt + 1}/{max_retries}): {e}")
-                    print(f"  Waiting {retry_delay} seconds before retrying...")
-                    time.sleep(retry_delay)
-                elif should_retry:
-                    print(f"❌ {error_type} error after {max_retries} attempts")
-                    raise
-                else:
-                    # Re-raise if it's not a retryable error
-                    raise
-
-        # Extract text from response
-        blocks = getattr(msg, "content", None)
-        if isinstance(blocks, list) and blocks:
-            texts: List[str] = []
-            for b in blocks:
-                text = getattr(b, "text", None)
-                if text:
-                    texts.append(text)
-            if texts:
-                return "\n".join(texts)
-
-        return str(msg)
+        """Call claude -p with system prompt. No SDK needed."""
+        from .claude_pipe import claude_system
+        return claude_system(system_prompt, user_prompt)
 
     def _generate_benign_counterpart(self, harmful_prompt: str) -> str:
         """Generate a benign counterpart for a harmful prompt.

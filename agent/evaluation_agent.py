@@ -25,24 +25,6 @@ except ImportError:
 
 
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
-ANTHROPIC_ENV_KEY = "ANTHROPIC_API_KEY"
-
-
-def _require_env(key: str) -> str:
-    value = os.getenv(key)
-    if not value:
-        raise RuntimeError(f"Environment variable {key} is required for anthropic access")
-    return value
-
-
-def _import_anthropic():
-    try:
-        import anthropic  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "anthropic Python package is required. Install with `pip install anthropic`"
-        ) from exc
-    return anthropic
 
 
 @dataclass
@@ -123,9 +105,6 @@ class EvaluationAgent:
         self.config = config or EvalAgentConfig()
         self.eval_model = eval_model or ANTHROPIC_MODEL
         self.attack_config = attack_config
-
-        self._anthropic = _import_anthropic()
-        self._client = self._anthropic.Anthropic(api_key=_require_env(ANTHROPIC_ENV_KEY))
 
         # Initialize TestTargetModel with attack config if provided (same as ResearchHypothesisAgent)
         if attack_config:
@@ -212,32 +191,9 @@ Think carefully about which hypotheses are similar and which are different. Thin
 """
 
     def _call_anthropic(self, user_prompt: str) -> str:
-        """Call Claude API with thinking support."""
-        kwargs: Dict[str, Any] = {
-            "model": self.eval_model,
-            "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature,
-            "system": self._system_prompt(),
-            "messages": [{"role": "user", "content": user_prompt}],
-        }
-
-        # Add thinking parameters if enabled
-        if self.config.thinking_enabled:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": self.config.thinking_budget_tokens,
-            }
-
-        msg = self._client.messages.create(**kwargs)
-
-        # Extract text from response
-        text_parts = []
-        if hasattr(msg, "content") and isinstance(msg.content, list):
-            for block in msg.content:
-                if hasattr(block, "text"):
-                    text_parts.append(block.text)
-
-        return "\n".join(text_parts) if text_parts else str(msg)
+        """Call claude -p with system prompt. No SDK needed."""
+        from .claude_pipe import claude_system
+        return claude_system(self._system_prompt(), user_prompt)
 
     def _parse_split_response(self, response: str) -> Tuple[List[int], List[int], str]:
         """Parse the Claude response to extract training and OOD indices."""

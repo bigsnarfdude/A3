@@ -271,6 +271,18 @@ Training Process:
     # LoRA is always enabled - hyperparameters are agent-controlled
     sft_config.use_lora = True
 
+    # Apply sft_config_overrides from JSON config (e.g., use_unsloth, vllm_tensor_parallel_size)
+    with open(args.config_file, "r") as f:
+        raw_config = json.load(f)
+    if "sft_config_overrides" in raw_config:
+        overrides = raw_config["sft_config_overrides"]
+        for key, value in overrides.items():
+            if hasattr(sft_config, key):
+                setattr(sft_config, key, value)
+                print(f"  Override: {key} = {value}")
+            else:
+                print(f"  Warning: unknown sft_config override '{key}', skipping")
+
     # Compute training budget if not specified
     training_budget = args.training_budget
     if training_budget is None:
@@ -283,8 +295,13 @@ Training Process:
     print(f"  Number of iterations: {args.num_iterations}")
     print(f"  Batch size per device: {sft_config.per_device_train_batch_size}")
     print(f"  Gradient accumulation: {sft_config.gradient_accumulation_steps}")
-    print(f"  Effective batch size: {sft_config.per_device_train_batch_size * sft_config.gradient_accumulation_steps * 4}")
-    print(f"  Distributed strategy: DDP (optimized for LoRA)")
+    import torch
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    print(f"  Effective batch size: {sft_config.per_device_train_batch_size * sft_config.gradient_accumulation_steps * num_gpus}")
+    if sft_config.use_unsloth:
+        print(f"  Training backend: unsloth QLoRA (single GPU)")
+    else:
+        print(f"  Distributed strategy: DDP (optimized for LoRA)")
     print(f"  LoRA enabled: Always (hyperparameters agent-controlled)")
     print(f"  Benchmark evaluation: {sft_config.enable_benchmark_eval}")
     if sft_config.enable_benchmark_eval:
@@ -380,11 +397,7 @@ Training Process:
         print(f"  Learning rate: {hyperparams_response.learning_rate}")
         print(f"  Number of epochs: {hyperparams_response.num_epochs}")
 
-        # Step 2: Terminate any existing vLLM server
-        agent.sft_agent.terminate_vllm()
-
-        # Step 3: Prepare weighted training data with Dolci mixing (will be resampled each epoch in training)
-        # For now, just use the first epoch's data to create the file structure
+        # Step 2: Prepare weighted training data with Dolci mixing
         training_data_file = agent.prepare_weighted_training_data(
             training_split,
             expected_behaviors,
@@ -394,115 +407,111 @@ Training Process:
             dolci_responses_file=agent.dolci_responses_file
         )
 
-        # Step 4: Train model
-        checkpoint_path = agent.sft_agent.train_model(training_data_file)
-
-        # Prepare final model path for evaluation
-        final_model_path = f"{checkpoint_path}/final"
-        lora_adapters_path = f"{checkpoint_path}/lora_adapters"
-
-        # If LoRA is enabled, training script already merged and saved to final/
-        # If LoRA is disabled, we need to copy latest checkpoint to final/
-        if agent.sft_agent.config.use_lora:
-            # LoRA case: training script should have created final/ with merged model
-            if not Path(final_model_path).exists():
-                raise RuntimeError(
-                    f"LoRA enabled but final model not found at {final_model_path}! "
-                    f"Training script may have failed to merge adapters."
-                )
-            print(f"\n{'='*80}")
-            print(f"USING MERGED LORA MODEL FROM TRAINING")
-            print(f"{'='*80}")
-            if Path(lora_adapters_path).exists():
-                print(f"✓ LoRA adapters: {lora_adapters_path}")
-            print(f"✓ Merged model: {final_model_path}")
-            print(f"{'='*80}\n")
-        else:
-            # Non-LoRA case: copy latest checkpoint to final/
-            import glob
-            import shutil
-            checkpoint_dirs = glob.glob(f"{checkpoint_path}/checkpoint-*")
-
-            if not checkpoint_dirs:
-                # Check if final/ already exists from training script
-                if Path(final_model_path).exists():
-                    print(f"✓ Using existing final model: {final_model_path}")
-                else:
-                    raise RuntimeError(f"No checkpoints found in {checkpoint_path}! Training may have failed.")
-            else:
-                # Sort by checkpoint number and use latest
-                checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
-                latest_checkpoint = checkpoint_dirs[-1]
-
-                print(f"\n{'='*80}")
-                print(f"PREPARING FINAL MODEL FOR EVALUATION")
-                print(f"{'='*80}")
-                print(f"Latest checkpoint: {latest_checkpoint}")
-
-                # Remove old final directory if it exists
-                if Path(final_model_path).exists():
-                    print(f"Removing old final directory: {final_model_path}")
-                    shutil.rmtree(final_model_path)
-
-                # Copy latest checkpoint to final
-                print(f"Copying {latest_checkpoint} -> {final_model_path}")
-                shutil.copytree(latest_checkpoint, final_model_path)
-                print(f"✓ Final model ready: {final_model_path}")
-                print(f"{'='*80}\n")
-
-        # Step 4.5: Run benchmark evaluation on final model (after all epochs)
+        # Step 3-7: Train + Eval (branching on unsloth vs vLLM)
         benchmark_results_list = []
-        if agent.sft_agent.config.enable_benchmark_eval:
-            print(f"\n{'='*100}")
-            print(f"RUNNING BENCHMARK EVALUATION - ITERATION {iteration}")
-            print(f"{'='*100}\n")
 
-            print(f"Evaluating final model: {final_model_path}")
-
-            try:
-                benchmark_result = agent.sft_agent.evaluate_benchmarks(
-                    str(final_model_path),
-                    epoch=agent.sft_agent.config.num_train_epochs
+        if agent.sft_agent.config.use_unsloth:
+            # ---- UNSLOTH PATH: train + inference in one process, no vLLM ----
+            checkpoint_path, validation_results, ood_results = \
+                agent.sft_agent.train_and_evaluate_unsloth(
+                    training_data_file,
+                    validation_split,
+                    ood_split,
+                    attack_config,
                 )
-                benchmark_results_list.append(benchmark_result)
+            final_model_path = f"{checkpoint_path}/final"
 
-                # Print summary
-                print(f"\n✓ Iteration {iteration} Benchmark Results:")
-                print(f"  MMLU-Pro: {benchmark_result.mmlu_pro_accuracy:.2%}")
-                print(f"  GPQA: {benchmark_result.gpqa_accuracy:.2%}")
-                print(f"  Overall: {benchmark_result.overall_score:.2%}")
+            # Benchmark eval loads saved model from disk (separate from unsloth)
+            if agent.sft_agent.config.enable_benchmark_eval:
+                print(f"\n{'='*100}")
+                print(f"RUNNING BENCHMARK EVALUATION - ITERATION {iteration}")
+                print(f"{'='*100}\n")
+                try:
+                    benchmark_result = agent.sft_agent.evaluate_benchmarks(
+                        str(final_model_path),
+                        epoch=agent.sft_agent.config.num_train_epochs
+                    )
+                    benchmark_results_list.append(benchmark_result)
+                    print(f"\n  MMLU-Pro: {benchmark_result.mmlu_pro_accuracy:.2%}")
+                    print(f"  GPQA: {benchmark_result.gpqa_accuracy:.2%}")
+                    if baseline_benchmark:
+                        mmlu_change = (benchmark_result.mmlu_pro_accuracy - baseline_benchmark.mmlu_pro_accuracy) * 100
+                        gpqa_change = (benchmark_result.gpqa_accuracy - baseline_benchmark.gpqa_accuracy) * 100
+                        print(f"  MMLU-Pro change: {mmlu_change:+.2f}%")
+                        print(f"  GPQA change: {gpqa_change:+.2f}%")
+                except Exception as e:
+                    print(f"Error evaluating benchmarks: {e}")
+                    import traceback
+                    traceback.print_exc()
 
-                # Check for degradation from baseline
-                if baseline_benchmark:
-                    mmlu_change = (benchmark_result.mmlu_pro_accuracy - baseline_benchmark.mmlu_pro_accuracy) * 100
-                    gpqa_change = (benchmark_result.gpqa_accuracy - baseline_benchmark.gpqa_accuracy) * 100
-                    print(f"  MMLU-Pro change from baseline: {mmlu_change:+.2f}%")
-                    print(f"  GPQA change from baseline: {gpqa_change:+.2f}%")
+        else:
+            # ---- ORIGINAL PATH: torchrun + vLLM server ----
+            agent.sft_agent.terminate_vllm()
 
-                    if mmlu_change < -1.0 or gpqa_change < -1.0:
-                        print(f"  WARNING: Benchmark degradation exceeds 1% threshold!")
+            checkpoint_path = agent.sft_agent.train_model(training_data_file)
+            final_model_path = f"{checkpoint_path}/final"
+            lora_adapters_path = f"{checkpoint_path}/lora_adapters"
 
-            except Exception as e:
-                print(f"Error evaluating final model {final_model_path}: {e}")
-                import traceback
-                traceback.print_exc()
+            if agent.sft_agent.config.use_lora:
+                if not Path(final_model_path).exists():
+                    raise RuntimeError(
+                        f"LoRA enabled but final model not found at {final_model_path}! "
+                        f"Training script may have failed to merge adapters."
+                    )
+                print(f"\n{'='*80}")
+                print(f"USING MERGED LORA MODEL FROM TRAINING")
+                print(f"{'='*80}")
+                if Path(lora_adapters_path).exists():
+                    print(f"✓ LoRA adapters: {lora_adapters_path}")
+                print(f"✓ Merged model: {final_model_path}")
+                print(f"{'='*80}\n")
+            else:
+                import glob
+                import shutil
+                checkpoint_dirs = glob.glob(f"{checkpoint_path}/checkpoint-*")
 
-            print(f"\n{'='*100}")
-            print("BENCHMARK EVALUATION COMPLETE")
-            print(f"{'='*100}\n")
+                if not checkpoint_dirs:
+                    if Path(final_model_path).exists():
+                        print(f"✓ Using existing final model: {final_model_path}")
+                    else:
+                        raise RuntimeError(f"No checkpoints found in {checkpoint_path}!")
+                else:
+                    checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
+                    latest_checkpoint = checkpoint_dirs[-1]
+                    if Path(final_model_path).exists():
+                        shutil.rmtree(final_model_path)
+                    shutil.copytree(latest_checkpoint, final_model_path)
+                    print(f"✓ Final model ready: {final_model_path}")
 
-        # Step 5: Start vLLM server with finetuned model
-        agent.sft_agent.start_vllm_server(final_model_path)
+            # Benchmark evaluation
+            if agent.sft_agent.config.enable_benchmark_eval:
+                print(f"\n{'='*100}")
+                print(f"RUNNING BENCHMARK EVALUATION - ITERATION {iteration}")
+                print(f"{'='*100}\n")
+                try:
+                    benchmark_result = agent.sft_agent.evaluate_benchmarks(
+                        str(final_model_path),
+                        epoch=agent.sft_agent.config.num_train_epochs
+                    )
+                    benchmark_results_list.append(benchmark_result)
+                    print(f"\n  MMLU-Pro: {benchmark_result.mmlu_pro_accuracy:.2%}")
+                    print(f"  GPQA: {benchmark_result.gpqa_accuracy:.2%}")
+                    if baseline_benchmark:
+                        mmlu_change = (benchmark_result.mmlu_pro_accuracy - baseline_benchmark.mmlu_pro_accuracy) * 100
+                        gpqa_change = (benchmark_result.gpqa_accuracy - baseline_benchmark.gpqa_accuracy) * 100
+                        print(f"  MMLU-Pro change: {mmlu_change:+.2f}%")
+                        print(f"  GPQA change: {gpqa_change:+.2f}%")
+                except Exception as e:
+                    print(f"Error evaluating benchmarks: {e}")
+                    import traceback
+                    traceback.print_exc()
 
-        # Step 6: Evaluate model
-        validation_results, ood_results = agent.sft_agent.evaluate_model(
-            validation_split,
-            ood_split,
-            attack_config
-        )
-
-        # Step 7: Terminate vLLM after evaluation
-        agent.sft_agent.terminate_vllm()
+            # vLLM evaluation
+            agent.sft_agent.start_vllm_server(final_model_path)
+            validation_results, ood_results = agent.sft_agent.evaluate_model(
+                validation_split, ood_split, attack_config
+            )
+            agent.sft_agent.terminate_vllm()
 
         # Step 8: Calculate metrics
         val_harmful = validation_results["harmful"]

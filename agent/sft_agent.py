@@ -84,6 +84,9 @@ class SFTConfig:
     lora_dropout: float = 0.0
     lora_target_modules: Optional[List[str]] = None  # Will auto-detect if None
 
+    # Unsloth settings (single-GPU QLoRA, 2x faster)
+    use_unsloth: bool = False
+
     def __post_init__(self):
         """Set default values after initialization."""
         if self.target_model_base_url is None:
@@ -385,49 +388,75 @@ class SFTAgent:
         print(f"Output directory: {output_dir}")
         print(f"Batch size per device: {self.config.per_device_train_batch_size}")
         print(f"Gradient accumulation steps: {self.config.gradient_accumulation_steps}")
-        print(f"Effective batch size: {self.config.per_device_train_batch_size * self.config.gradient_accumulation_steps * torch.cuda.device_count()}")
+        num_devices = max(torch.cuda.device_count(), 1)
+        print(f"Effective batch size: {self.config.per_device_train_batch_size * self.config.gradient_accumulation_steps * num_devices}")
         print(f"Learning rate: {self.config.learning_rate}")
         print(f"Epochs: {self.config.num_train_epochs}")
         print(f"FSDP enabled: {self.config.fsdp_enabled}")
+        print(f"Unsloth: {self.config.use_unsloth}")
         print(f"{'='*80}\n")
 
         # Build command with arguments for standalone training script
         num_gpus = torch.cuda.device_count()
         # Get path to training script relative to this module
         script_dir = Path(__file__).parent.parent / "scripts"
-        training_script = script_dir / "sft_training_script.py"
-        cmd = [
-            "torchrun",
-            f"--nproc_per_node={num_gpus}",
-            str(training_script),
-            "--model-name", self.config.model_name_or_path,
-            "--training-data", training_data_file,
-            "--output-dir", output_dir,
-            "--learning-rate", str(self.config.learning_rate),
-            "--epochs", str(self.config.num_train_epochs),
-            "--batch-size", str(self.config.per_device_train_batch_size),
-            "--gradient-accumulation-steps", str(self.config.gradient_accumulation_steps),
-            "--max-length", str(self.config.max_seq_length),
-            "--warmup-ratio", str(self.config.warmup_ratio),
-            "--save-steps", str(self.config.save_steps),
-        ]
 
-        # Add LoRA arguments if enabled
-        if self.config.use_lora:
-            cmd.extend([
-                "--use-lora",
+        if self.config.use_unsloth:
+            # Single-GPU unsloth path: no torchrun, use unsloth script
+            training_script = script_dir / "sft_training_script_unsloth.py"
+            cmd = [
+                "python", str(training_script),
+                "--model-name", self.config.model_name_or_path,
+                "--training-data", training_data_file,
+                "--output-dir", output_dir,
+                "--learning-rate", str(self.config.learning_rate),
+                "--epochs", str(self.config.num_train_epochs),
+                "--batch-size", str(self.config.per_device_train_batch_size),
+                "--gradient-accumulation-steps", str(self.config.gradient_accumulation_steps),
+                "--max-length", str(self.config.max_seq_length),
+                "--warmup-ratio", str(self.config.warmup_ratio),
+                "--save-steps", str(self.config.save_steps),
                 "--lora-r", str(self.config.lora_r),
                 "--lora-alpha", str(self.config.lora_alpha),
-                "--lora-dropout", str(self.config.lora_dropout)
-            ])
-            # Add target modules if specified
+                "--lora-dropout", str(self.config.lora_dropout),
+            ]
             if self.config.lora_target_modules:
                 cmd.extend(["--lora-target-modules"] + self.config.lora_target_modules)
+        else:
+            # Original multi-GPU path: torchrun + DDP/FSDP
+            training_script = script_dir / "sft_training_script.py"
+            cmd = [
+                "torchrun",
+                f"--nproc_per_node={num_gpus}",
+                str(training_script),
+                "--model-name", self.config.model_name_or_path,
+                "--training-data", training_data_file,
+                "--output-dir", output_dir,
+                "--learning-rate", str(self.config.learning_rate),
+                "--epochs", str(self.config.num_train_epochs),
+                "--batch-size", str(self.config.per_device_train_batch_size),
+                "--gradient-accumulation-steps", str(self.config.gradient_accumulation_steps),
+                "--max-length", str(self.config.max_seq_length),
+                "--warmup-ratio", str(self.config.warmup_ratio),
+                "--save-steps", str(self.config.save_steps),
+            ]
 
-        # Add FSDP flag if disabled or if using LoRA (DDP is better for LoRA)
-        # FSDP is only beneficial for full fine-tuning where memory savings matter
-        if not self.config.fsdp_enabled or self.config.use_lora:
-            cmd.append("--disable-fsdp")
+            # Add LoRA arguments if enabled
+            if self.config.use_lora:
+                cmd.extend([
+                    "--use-lora",
+                    "--lora-r", str(self.config.lora_r),
+                    "--lora-alpha", str(self.config.lora_alpha),
+                    "--lora-dropout", str(self.config.lora_dropout)
+                ])
+                # Add target modules if specified
+                if self.config.lora_target_modules:
+                    cmd.extend(["--lora-target-modules"] + self.config.lora_target_modules)
+
+            # Add FSDP flag if disabled or if using LoRA (DDP is better for LoRA)
+            # FSDP is only beneficial for full fine-tuning where memory savings matter
+            if not self.config.fsdp_enabled or self.config.use_lora:
+                cmd.append("--disable-fsdp")
 
         print(f"Running: {' '.join(cmd)}\n")
 
@@ -784,6 +813,126 @@ class SFTAgent:
             json.dump(results_dict, f, indent=2)
 
         print(f"\nResults saved to: {output_file}")
+
+    def train_and_evaluate_unsloth(
+        self,
+        training_data_file: str,
+        validation_split: 'DataSplit',
+        ood_split: 'DataSplit',
+        attack_config: Any,
+        output_dir: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        """Train with unsloth and generate eval responses in one process.
+
+        Model stays in GPU memory: train → flip to inference → generate
+        responses → save. No vLLM needed.
+
+        Args:
+            training_data_file: Path to training data JSON
+            validation_split: Validation data split
+            ood_split: OOD data split
+            attack_config: Attack configuration (for judging)
+            output_dir: Output directory for checkpoints
+
+        Returns:
+            Tuple of (checkpoint_path, validation_results, ood_results)
+        """
+        if output_dir is None:
+            output_dir = self.config.output_dir
+            if self.config.behavior_key:
+                output_dir = f"{output_dir}_{self.config.behavior_key}_{self.config.model_name}"
+            else:
+                output_dir = f"{output_dir}_{self.config.model_name}"
+
+        # ---- Prepare eval prompts file ----
+        eval_prompts = {
+            "val_harmful": validation_split.harmful_prompts,
+            "val_benign": validation_split.benign_prompts,
+            "ood_harmful": ood_split.harmful_prompts,
+            "ood_benign": ood_split.benign_prompts,
+        }
+        eval_prompts_file = str(Path(output_dir).parent / "eval_prompts.json")
+        Path(eval_prompts_file).parent.mkdir(parents=True, exist_ok=True)
+        with open(eval_prompts_file, "w") as f:
+            json.dump(eval_prompts, f, indent=2)
+
+        responses_file = str(Path(output_dir).parent / "eval_responses.json")
+
+        # ---- Build command ----
+        script_dir = Path(__file__).parent.parent / "scripts"
+        training_script = script_dir / "sft_training_script_unsloth.py"
+
+        cmd = [
+            "python", str(training_script),
+            "--model-name", self.config.model_name_or_path,
+            "--training-data", training_data_file,
+            "--output-dir", output_dir,
+            "--learning-rate", str(self.config.learning_rate),
+            "--epochs", str(self.config.num_train_epochs),
+            "--batch-size", str(self.config.per_device_train_batch_size),
+            "--gradient-accumulation-steps", str(self.config.gradient_accumulation_steps),
+            "--max-length", str(self.config.max_seq_length),
+            "--warmup-ratio", str(self.config.warmup_ratio),
+            "--save-steps", str(self.config.save_steps),
+            "--lora-r", str(self.config.lora_r),
+            "--lora-alpha", str(self.config.lora_alpha),
+            "--lora-dropout", str(self.config.lora_dropout),
+            "--eval-prompts", eval_prompts_file,
+            "--responses-output", responses_file,
+            "--max-new-tokens", str(attack_config.target_model.max_tokens),
+            "--temperature", str(attack_config.target_model.temperature),
+        ]
+        if self.config.lora_target_modules:
+            cmd.extend(["--lora-target-modules"] + self.config.lora_target_modules)
+
+        print(f"\n{'='*80}")
+        print("UNSLOTH TRAIN + EVAL (single process, no vLLM)")
+        print(f"{'='*80}")
+        print(f"Model: {self.config.model_name_or_path}")
+        print(f"Training data: {training_data_file}")
+        print(f"Eval prompts: {eval_prompts_file}")
+        print(f"{'='*80}\n")
+        print(f"Running: {' '.join(cmd)}\n")
+
+        env = os.environ.copy()
+        env["MKL_SERVICE_FORCE_INTEL"] = "1"
+        env["MKL_THREADING_LAYER"] = "GNU"
+
+        subprocess.run(cmd, check=True, capture_output=False, env=env)
+
+        # ---- Read responses and judge them ----
+        print(f"\n{'='*80}")
+        print("JUDGING RESPONSES (Claude SDK)")
+        print(f"{'='*80}\n")
+
+        with open(responses_file, "r") as f:
+            responses = json.load(f)
+
+        validation_results, ood_results = self._judge_responses(
+            responses, attack_config
+        )
+
+        return output_dir, validation_results, ood_results
+
+    def _judge_responses(
+        self,
+        responses: Dict[str, Any],
+        attack_config: Any,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Judge pre-generated responses using claude -p. No SDK, no API key.
+
+        Args:
+            responses: Dict with val_harmful, val_benign, ood_harmful, ood_benign
+            attack_config: Attack configuration with judge prompts
+
+        Returns:
+            Tuple of (validation_results, ood_results)
+        """
+        from .claude_pipe import judge_responses
+
+        results = judge_responses(responses, attack_config.judge_prompts)
+
+        return results["validation"], results["ood"]
 
     def __del__(self):
         """Cleanup on deletion."""

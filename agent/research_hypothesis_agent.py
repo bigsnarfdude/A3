@@ -20,24 +20,6 @@ except ImportError:
 
 
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
-ANTHROPIC_ENV_KEY = "ANTHROPIC_API_KEY"
-
-
-def _require_env(key: str) -> str:
-    value = os.getenv(key)
-    if not value:
-        raise RuntimeError(f"Environment variable {key} is required for anthropic access")
-    return value
-
-
-def _import_anthropic():
-    try:
-        import anthropic  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "anthropic Python package is required. Install with `pip install anthropic`"
-        ) from exc
-    return anthropic
 
 
 @dataclass
@@ -134,10 +116,6 @@ class ResearchHypothesisAgent:
         # Extract behavior_key from log for directory naming
         self.behavior_key = self.log.behavior_key
 
-        self._anthropic = _import_anthropic()
-
-        self._client = self._anthropic.Anthropic(api_key=_require_env(ANTHROPIC_ENV_KEY))
-
         # Configure data generation agent with conversation format settings
         # Use the same model for bloom-evals as for hypothesis generation
         bloom_model_name = f"anthropic/{self.hypothesis_model}"
@@ -226,70 +204,8 @@ class ResearchHypothesisAgent:
         )
 
     def _call_anthropic(self, user_prompt: str) -> str:
-        import time
-
-        # Prepare base request
-        base_kwargs = {
-            "model": self.hypothesis_model,
-            "max_tokens": self.config.max_tokens,
-            "temperature": 1.0,  # Must be 1.0 when using extended thinking
-            "system": self._system_prompt(),
-            "messages": [{"role": "user", "content": user_prompt}],
-        }
-
-        # Retry configuration
-        max_retries = 20
-        retry_delay = 10  # Constant delay in seconds
-
-        for attempt in range(max_retries):
-            try:
-                # Always use extended thinking
-                base_kwargs["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": int(getattr(self.config, "thinking_budget_tokens", 2048)),
-                }
-                msg = self._client.messages.create(**base_kwargs)
-
-                # Success - break out of retry loop
-                break
-
-            except (self._anthropic.RateLimitError, self._anthropic.APIStatusError) as e:
-                # Retry on rate limit (429) and overloaded (529) errors
-                should_retry = False
-
-                if isinstance(e, self._anthropic.RateLimitError):
-                    should_retry = True
-                    error_type = "Rate limit"
-                elif isinstance(e, self._anthropic.APIStatusError) and e.status_code == 529:
-                    should_retry = True
-                    error_type = "Overloaded"
-
-                if should_retry and attempt < max_retries - 1:
-                    print(f"⚠ {error_type} error (attempt {attempt + 1}/{max_retries}): {e}")
-                    print(f"  Waiting {retry_delay} seconds before retrying...")
-                    time.sleep(retry_delay)
-                elif should_retry:
-                    print(f"❌ {error_type} error after {max_retries} attempts")
-                    raise
-                else:
-                    # Re-raise if it's not a retryable error
-                    raise
-        # anthropic SDK v2 returns content as list of content blocks
-        try:
-            blocks = getattr(msg, "content", None)
-            if isinstance(blocks, list) and blocks:
-                # concatenate text blocks
-                texts: List[str] = []
-                for b in blocks:
-                    text = getattr(b, "text", None)
-                    if text:
-                        texts.append(text)
-                if texts:
-                    return "\n".join(texts)
-        except Exception:
-            pass
-        # Fallback to str
-        return str(msg)
+        from .claude_pipe import claude_system
+        return claude_system(self._system_prompt(), user_prompt)
 
     def propose_hypotheses(self) -> str:
         prompt = self._user_prompt_hypotheses()

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -171,12 +170,6 @@ Examples:
         help="Model to use for data splitting and evaluation (default: claude-sonnet-4-20250514)"
     )
     args = parser.parse_args()
-
-    # Require Anthropic API key
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        raise RuntimeError(
-            "Environment variable ANTHROPIC_API_KEY is required"
-        )
 
     # Load config from file
     print(f"Loading attack config from: {args.config_file}")

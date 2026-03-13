@@ -24,7 +24,6 @@ Key Features:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import sys
@@ -51,17 +50,6 @@ def _require_env(key: str) -> str:
     return value
 
 
-def _import_anthropic():
-    """Import anthropic package."""
-    try:
-        import anthropic
-    except Exception as exc:
-        raise RuntimeError(
-            "anthropic Python package is required. Install with `pip install anthropic`"
-        ) from exc
-    return anthropic
-
-
 def load_data_split(split_file: Path) -> DataSplit:
     """Load a data split from JSON file.
 
@@ -84,178 +72,72 @@ def load_data_split(split_file: Path) -> DataSplit:
     )
 
 
-async def generate_behavior_for_prompt(
-    client,
+def generate_behavior_for_prompt(
     prompt: str,
     is_harmful: bool,
-    semaphore: asyncio.Semaphore,
-    model: str,
     expected_behavior_prompts: ExpectedBehaviorPrompts = None,
-    max_tokens: int = 2000,
-    max_retries: int = 20
 ) -> Tuple[str, str]:
-    """Generate expected behavior for a single prompt with retry logic.
+    """Generate expected behavior for a single prompt using claude -p.
 
     Args:
-        client: Anthropic client
         prompt: The prompt to generate behavior for (may be string or conversation list)
         is_harmful: Whether this is a harmful prompt
-        semaphore: Semaphore for rate limiting
-        model: Model name to use
-        expected_behavior_prompts: Config-based prompts for generation (optional)
-        max_tokens: Max tokens for response
-        max_retries: Maximum number of retry attempts
+        expected_behavior_prompts: Config-based prompts for generation (required)
 
     Returns:
-        Tuple of (prompt, expected_behavior)
+        Tuple of (prompt_key, expected_behavior)
     """
-    async with semaphore:
-        # Parse prompt if it's a conversation
-        # Prompts can be either:
-        # 1. A string (simple prompt)
-        # 2. A JSON string representing a conversation (needs parsing)
-        # 3. Already parsed as a list of message dicts
+    from agent.claude_pipe import generate_expected_behavior
 
-        if isinstance(prompt, list):
-            # Already parsed as conversation
-            conversation = prompt
-            use_conversation = True
-        elif isinstance(prompt, str) and prompt.strip().startswith('['):
-            try:
-                conversation = json.loads(prompt)
-                use_conversation = True
-            except json.JSONDecodeError:
-                conversation = None
-                use_conversation = False
-        else:
-            conversation = None
-            use_conversation = False
+    if not expected_behavior_prompts:
+        raise ValueError(
+            "expected_behavior_prompts is required in config file. "
+            "Please add the 'expected_behavior_prompts' section to your config."
+        )
 
-        # Use config-based prompts (required)
-        if not expected_behavior_prompts:
-            raise ValueError(
-                "expected_behavior_prompts is required in config file. "
-                "Please add the 'expected_behavior_prompts' section to your config."
-            )
+    if is_harmful:
+        system_prompt = expected_behavior_prompts.harmful_system_prompt
+        user_content = expected_behavior_prompts.harmful_user_template.format(prompt=prompt)
+        default = expected_behavior_prompts.harmful_default_response
+    else:
+        system_prompt = expected_behavior_prompts.benign_system_prompt
+        user_content = expected_behavior_prompts.benign_user_template.format(prompt=prompt)
+        default = expected_behavior_prompts.benign_default_response
 
-        if is_harmful:
-            system_prompt = expected_behavior_prompts.harmful_system_prompt
-            # user_template can use {prompt} placeholder
-            user_content = expected_behavior_prompts.harmful_user_template.format(prompt=prompt)
-        else:
-            system_prompt = expected_behavior_prompts.benign_system_prompt
-            user_content = expected_behavior_prompts.benign_user_template.format(prompt=prompt)
+    behavior = generate_expected_behavior(system_prompt, user_content, default)
 
-        # Prepare messages for API call
-        if use_conversation and conversation:
-            # For conversation format, pass the entire conversation
-            # The prompt is a JSON string of messages
-            messages = conversation
-        elif expected_behavior_prompts:
-            # Use user_content from template if config provided
-            messages = [{"role": "user", "content": user_content}]
-        else:
-            # For simple string prompts
-            messages = [{"role": "user", "content": prompt}]
-
-        # Retry loop with exponential backoff
-        for attempt in range(max_retries):
-            try:
-                response = await client.messages.create(
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=0.7,
-                    system=system_prompt,
-                    messages=messages
-                )
-
-                behavior = response.content[0].text
-                # Return prompt as string for dictionary key
-                # If prompt is a list, convert back to JSON string
-                prompt_key = json.dumps(prompt) if isinstance(prompt, list) else prompt
-                return (prompt_key, behavior)
-
-            except Exception as e:
-                error_str = str(e)
-                is_rate_limit = "rate_limit" in error_str.lower() or "429" in error_str
-                is_overloaded = "overloaded" in error_str.lower() or "529" in error_str
-                is_invalid_request = "invalid" in error_str.lower() and "request" in error_str.lower()
-
-                # Don't retry invalid requests - fail immediately with details
-                if is_invalid_request:
-                    print(f"\n  Invalid request error: {error_str}")
-                    print(f"  Prompt type: {type(prompt)}")
-                    print(f"  Messages type: {type(messages)}")
-                    if isinstance(messages, list) and len(messages) > 0:
-                        print(f"  First message: {messages[0]}")
-                    print(f"  Model: {model}")
-                    print(f"  System prompt length: {len(system_prompt)}")
-                    raise
-
-                # Calculate backoff time
-                if is_rate_limit or is_overloaded:
-                    # Longer backoff for rate limits
-                    backoff = min(300, (2 ** attempt) * 5)  # 5, 10, 20, 40, 80 seconds, max 300s
-                else:
-                    # Shorter backoff for other errors
-                    backoff = min(60, (2 ** attempt) * 2)  # 2, 4, 8, 16, 32 seconds, max 60s
-
-                if attempt < max_retries - 1:
-                    print(f"  Retry {attempt + 1}/{max_retries} for {'harmful' if is_harmful else 'benign'} prompt after {backoff}s (error: {error_str[:100]})")
-                    await asyncio.sleep(backoff)
-                else:
-                    print(f"  Failed after {max_retries} attempts for {'harmful' if is_harmful else 'benign'} prompt: {error_str[:100]}")
-                    # Return fallback responses after all retries exhausted
-                    # Convert prompt to string key if needed
-                    prompt_key = json.dumps(prompt) if isinstance(prompt, list) else prompt
-                    if is_harmful:
-                        return (prompt_key, expected_behavior_prompts.harmful_default_response)
-                    else:
-                        return (prompt_key, expected_behavior_prompts.benign_default_response)
+    prompt_key = json.dumps(prompt) if isinstance(prompt, list) else prompt
+    return (prompt_key, behavior)
 
 
-async def generate_behaviors(
+def generate_behaviors(
     prompts: List[str],
     is_harmful: bool,
-    api_key: str,
-    model: str,
     expected_behavior_prompts: ExpectedBehaviorPrompts = None,
-    max_parallel: int = 20
 ) -> Dict[str, str]:
-    """Generate expected behaviors for a list of prompts.
+    """Generate expected behaviors for a list of prompts using claude -p.
 
     Args:
         prompts: List of prompts
         is_harmful: Whether these are harmful prompts
-        api_key: Anthropic API key
-        model: Model name to use
-        expected_behavior_prompts: Config-based prompts for generation (optional)
-        max_parallel: Maximum parallel requests
+        expected_behavior_prompts: Config-based prompts for generation (required)
 
     Returns:
         Dict mapping prompts to expected behaviors
     """
-    anthropic = _import_anthropic()
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-    semaphore = asyncio.Semaphore(max_parallel)
-
     behavior_type = "harmful" if is_harmful else "benign"
     print(f"Generating behaviors for {len(prompts)} {behavior_type} prompts...")
 
-    tasks = [
-        generate_behavior_for_prompt(
-            client, prompt, is_harmful, semaphore, model,
-            expected_behavior_prompts=expected_behavior_prompts
+    behaviors = {}
+    for i, prompt in enumerate(prompts):
+        if i % 5 == 0:
+            print(f"  [{i+1}/{len(prompts)}] Generating {behavior_type} behavior...")
+        prompt_key, behavior = generate_behavior_for_prompt(
+            prompt, is_harmful, expected_behavior_prompts
         )
-        for prompt in prompts
-    ]
-
-    results = await asyncio.gather(*tasks)
-
-    behaviors = {prompt: behavior for prompt, behavior in results}
+        behaviors[prompt_key] = behavior
 
     print(f"Generated {len(behaviors)} behaviors")
-
     return behaviors
 
 
@@ -313,9 +195,7 @@ Behavior Generation:
     )
     args = parser.parse_args()
 
-    # Require API key
-    api_key = _require_env("ANTHROPIC_API_KEY")
-    print(f"Using model: {args.model}\n")
+    print(f"Using claude -p (no API key needed)\n")
 
     # Load config from file
     print(f"Loading attack config from: {args.config_file}")
@@ -358,24 +238,18 @@ Behavior Generation:
     print(f"{'='*80}\n")
 
     # Generate harmful behaviors
-    harmful_behaviors = asyncio.run(generate_behaviors(
+    harmful_behaviors = generate_behaviors(
         prompts=training_split.harmful_prompts,
         is_harmful=True,
-        api_key=api_key,
-        model=args.model,
         expected_behavior_prompts=expected_behavior_prompts,
-        max_parallel=args.max_parallel
-    ))
+    )
 
     # Generate benign behaviors
-    benign_behaviors = asyncio.run(generate_behaviors(
+    benign_behaviors = generate_behaviors(
         prompts=training_split.benign_prompts,
         is_harmful=False,
-        api_key=api_key,
-        model=args.model,
         expected_behavior_prompts=expected_behavior_prompts,
-        max_parallel=args.max_parallel
-    ))
+    )
 
     # Combine all behaviors
     all_behaviors = {**harmful_behaviors, **benign_behaviors}
