@@ -83,7 +83,14 @@ kill_vllm() {
 trap kill_vllm EXIT
 
 # ============================================
-# Step 1: Data Generation (API only, no GPU)
+# Start vLLM — needed for steps 1 and 2
+# Step 1 tests hypotheses against target model
+# Step 2 evaluates splits against target model
+# ============================================
+start_vllm
+
+# ============================================
+# Step 1: Data Generation (claude -p + vLLM)
 # ============================================
 echo "STEP 1: Data Generation — $(date)" | tee -a "$LOG_FILE"
 
@@ -95,11 +102,8 @@ echo "Step 1 done: $(date)" | tee -a "$LOG_FILE"
 
 # ============================================
 # Step 2: Evaluation & Splitting
-# Start vLLM to serve base model, eval, then kill it
 # ============================================
 echo "STEP 2: Evaluation — $(date)" | tee -a "$LOG_FILE"
-
-start_vllm
 
 python scripts/step2_evaluation.py \
     --config-file "$CONFIG" \
