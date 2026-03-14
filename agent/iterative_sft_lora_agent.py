@@ -31,24 +31,7 @@ from .sft_agent import SFTAgent, SFTConfig, SFTResult
 from .evaluation_agent import DataSplit
 
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
-ANTHROPIC_ENV_KEY = "ANTHROPIC_API_KEY"
-
-
-def _require_env(key: str) -> str:
-    value = os.getenv(key)
-    if not value:
-        raise RuntimeError(f"Environment variable {key} is required")
-    return value
-
-
-def _import_anthropic():
-    try:
-        import anthropic  # type: ignore
-    except Exception as exc:
-        raise RuntimeError(
-            "anthropic Python package is required. Install with `pip install anthropic`"
-        ) from exc
-    return anthropic
+    # claude -p handles all API calls — no SDK needed
 
 
 @dataclass
@@ -116,8 +99,7 @@ class IterativeLoRASFTAgent:
         self.training_budget = training_budget
         self.max_epochs = max_epochs
         self.num_iterations = num_iterations
-        self._anthropic = _import_anthropic()
-        self._client = self._anthropic.Anthropic(api_key=_require_env(ANTHROPIC_ENV_KEY))
+        # claude -p handles all API calls
 
     def _load_experiment_log(self, iteration: int = 1) -> str:
         """Load experiment log from disk."""
@@ -337,42 +319,9 @@ Then return ONLY the valid JSON.
         return prompt
 
     def _call_anthropic(self, user_prompt: str) -> str:
-        """Call Anthropic API with thinking enabled and retry logic."""
-        import time
-
-        max_retries = 20
-        base_delay = 2.0
-
-        for attempt in range(max_retries):
-            try:
-                msg = self._client.messages.create(
-                    model=ANTHROPIC_MODEL,
-                    max_tokens=8000,  # Increased from 4000
-                    temperature=1.0,  # Required when thinking is enabled
-                    thinking={
-                        "type": "enabled",
-                        "budget_tokens": 4000  # Increased from 2000
-                    },
-                    messages=[{"role": "user", "content": user_prompt}]
-                )
-
-                response_text = ""
-                for block in msg.content:
-                    if hasattr(block, 'text'):
-                        response_text += block.text
-
-                return response_text
-
-            except Exception as e:
-                error_type = type(e).__name__
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)  # Exponential backoff
-                    print(f"\n⚠ API call failed with {error_type}: {e}")
-                    print(f"Retrying in {delay:.1f} seconds... (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(delay)
-                else:
-                    print(f"\n❌ API call failed after {max_retries} attempts")
-                    raise
+        """Call claude -p for hyperparameter selection."""
+        from .claude_pipe import claude_query
+        return claude_query(user_prompt)
 
     def _parse_hyperparameters_response(self, response: str) -> HyperparametersResponse:
         """Parse Claude's hyperparameter selection response including LoRA settings and weights."""

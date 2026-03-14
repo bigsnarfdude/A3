@@ -188,11 +188,7 @@ Training Process:
     # Note: dolci_responses_file is now specified in the config file under paths.dolci_responses_file
     args = parser.parse_args()
 
-    # Require API key
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        raise RuntimeError(
-            "Environment variable ANTHROPIC_API_KEY is required for weight selection and judge model"
-        )
+    # claude -p handles all API calls — no key needed
 
     # Load config from file
     print(f"Loading attack config from: {args.config_file}")
