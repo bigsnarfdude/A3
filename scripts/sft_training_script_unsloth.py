@@ -272,8 +272,7 @@ def main():
         lr_scheduler_type="cosine",
         optim="adamw_8bit",
         report_to=[],
-        max_length=args.max_length,
-        dataset_text_field="text",
+        max_seq_length=args.max_length,
         packing=False,
         seed=3407,
     )
