@@ -255,6 +255,8 @@ def main():
     print(f"Loaded {len(dataset)} training examples\n")
 
     # ---- Train ----
+    from transformers import DataCollatorForSeq2Seq
+
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
@@ -272,16 +274,18 @@ def main():
         lr_scheduler_type="cosine",
         optim="adamw_8bit",
         report_to=[],
-        max_length=args.max_length,
+        max_seq_length=args.max_length,
+        dataset_num_proc=2,
         packing=False,
         seed=3407,
     )
 
     trainer = SFTTrainer(
         model=model,
-        args=sft_config,
+        tokenizer=tokenizer,
         train_dataset=dataset,
-        processing_class=tokenizer,
+        data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
+        args=sft_config,
     )
 
     print(f"\n{'='*80}")
