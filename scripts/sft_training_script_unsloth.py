@@ -273,8 +273,6 @@ def main():
         optim="adamw_8bit",
         report_to=[],
         max_length=args.max_length,
-        dataset_text_field="text",
-        eos_token=tokenizer.eos_token,
         packing=False,
         seed=3407,
     )
