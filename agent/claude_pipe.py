@@ -15,8 +15,10 @@ Functions:
 """
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -31,19 +33,24 @@ def claude_query(
     retry_delay: float = 5.0,
     timeout: int = 300,
 ) -> str:
-    """Call claude -p and return the raw text response."""
-    cmd = ["claude", "-p", prompt]
+    """Call claude -p and return the raw text response.
+
+    Always pipes the prompt via stdin to avoid OS ARG_MAX limits
+    on large prompts.
+    """
+    cmd = ["claude", "-p"]
     if model:
         cmd.extend(["--model", model])
 
-    stdin_data = None
+    # Build stdin: prompt + optional extra input
+    stdin_data = prompt
     if input_file:
         path = Path(input_file)
         if not path.exists():
             raise FileNotFoundError(f"Input file not found: {input_file}")
-        stdin_data = path.read_text()
+        stdin_data = prompt + "\n\n" + path.read_text()
     elif input_text:
-        stdin_data = input_text
+        stdin_data = prompt + "\n\n" + input_text
 
     for attempt in range(max_retries):
         try:
