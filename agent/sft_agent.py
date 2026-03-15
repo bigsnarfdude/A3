@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import subprocess
 import time
 import signal
@@ -274,7 +275,7 @@ class SFTAgent:
             time.sleep(3)
 
         cmd = [
-            "python", "-m", "vllm.entrypoints.openai.api_server",
+            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
             "--model", model_path,
             "--served-model-name", self.config.model_name,
             "--port", str(self.config.vllm_port),
@@ -405,7 +406,7 @@ class SFTAgent:
             # Single-GPU unsloth path: no torchrun, use unsloth script
             training_script = script_dir / "sft_training_script_unsloth.py"
             cmd = [
-                "python", str(training_script),
+                sys.executable, str(training_script),
                 "--model-name", self.config.model_name_or_path,
                 "--training-data", training_data_file,
                 "--output-dir", output_dir,
@@ -863,7 +864,7 @@ class SFTAgent:
         training_script = script_dir / "sft_training_script_unsloth.py"
 
         cmd = [
-            "python", str(training_script),
+            sys.executable, str(training_script),
             "--model-name", self.config.model_name_or_path,
             "--training-data", training_data_file,
             "--output-dir", output_dir,
