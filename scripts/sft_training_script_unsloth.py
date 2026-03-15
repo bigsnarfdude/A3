@@ -282,7 +282,7 @@ def main():
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
         data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
         args=sft_config,
