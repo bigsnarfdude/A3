@@ -42,6 +42,7 @@ import json
 import os
 import torch
 from pathlib import Path
+from unsloth import FastLanguageModel, is_bfloat16_supported
 from datasets import Dataset
 from trl import SFTTrainer, SFTConfig
 
@@ -190,8 +191,6 @@ def generate_responses_for_split(model, tokenizer, prompts, split_name,
 
 def main():
     args = parse_args()
-
-    from unsloth import FastLanguageModel, is_bfloat16_supported
 
     print(f"{'='*80}")
     print("UNSLOTH SFT TRAINING WITH QLoRA")
