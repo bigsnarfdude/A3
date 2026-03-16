@@ -72,6 +72,25 @@ def load_data_split(split_file: Path) -> DataSplit:
     )
 
 
+def _format_conversation(prompt) -> str:
+    """Format a conversation list into readable dialogue for claude -p.
+
+    Converts [{"role": "user", "content": "..."}, ...] into:
+        [USER]: ...
+        [ASSISTANT]: ...
+    """
+    if isinstance(prompt, str):
+        return prompt
+    if isinstance(prompt, list):
+        lines = []
+        for msg in prompt:
+            role = msg.get("role", "unknown").upper()
+            content = msg.get("content", "")
+            lines.append(f"[{role}]: {content}")
+        return "\n\n".join(lines)
+    return str(prompt)
+
+
 def generate_behavior_for_prompt(
     prompt: str,
     is_harmful: bool,
@@ -95,13 +114,15 @@ def generate_behavior_for_prompt(
             "Please add the 'expected_behavior_prompts' section to your config."
         )
 
+    formatted_prompt = _format_conversation(prompt)
+
     if is_harmful:
         system_prompt = expected_behavior_prompts.harmful_system_prompt
-        user_content = expected_behavior_prompts.harmful_user_template.format(prompt=prompt)
+        user_content = expected_behavior_prompts.harmful_user_template.format(prompt=formatted_prompt)
         default = expected_behavior_prompts.harmful_default_response
     else:
         system_prompt = expected_behavior_prompts.benign_system_prompt
-        user_content = expected_behavior_prompts.benign_user_template.format(prompt=prompt)
+        user_content = expected_behavior_prompts.benign_user_template.format(prompt=formatted_prompt)
         default = expected_behavior_prompts.benign_default_response
 
     behavior = generate_expected_behavior(system_prompt, user_content, default)
