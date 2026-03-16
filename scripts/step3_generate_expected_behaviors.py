@@ -131,12 +131,33 @@ def generate_behavior_for_prompt(
     return (prompt_key, behavior)
 
 
+def _is_valid_conversation(prompt) -> bool:
+    """Check if a prompt is a valid conversation (not a refusal or junk string).
+
+    Filters out:
+    - Refusal essays from step 1 where claude -p refused to generate adversarial content
+    - Other non-conversation strings that aren't usable for SFT training
+    """
+    if isinstance(prompt, list):
+        # Already a parsed conversation list — valid
+        return True
+    if not isinstance(prompt, str):
+        return False
+    # String prompts that are actually serialized conversations
+    if prompt.strip().startswith("[{"):
+        return True
+    # Everything else is likely a refusal or junk from step 1
+    return False
+
+
 def generate_behaviors(
     prompts: List[str],
     is_harmful: bool,
     expected_behavior_prompts: ExpectedBehaviorPrompts = None,
 ) -> Dict[str, str]:
     """Generate expected behaviors for a list of prompts using claude -p.
+
+    Filters out non-conversation prompts (step 1 refusals) before generating.
 
     Args:
         prompts: List of prompts
@@ -147,12 +168,18 @@ def generate_behaviors(
         Dict mapping prompts to expected behaviors
     """
     behavior_type = "harmful" if is_harmful else "benign"
-    print(f"Generating behaviors for {len(prompts)} {behavior_type} prompts...")
+
+    # Filter to valid conversations only
+    valid_prompts = [p for p in prompts if _is_valid_conversation(p)]
+    skipped = len(prompts) - len(valid_prompts)
+    if skipped > 0:
+        print(f"Filtered {skipped}/{len(prompts)} non-conversation prompts (step 1 refusals)")
+    print(f"Generating behaviors for {len(valid_prompts)} {behavior_type} prompts...")
 
     behaviors = {}
-    for i, prompt in enumerate(prompts):
+    for i, prompt in enumerate(valid_prompts):
         if i % 5 == 0:
-            print(f"  [{i+1}/{len(prompts)}] Generating {behavior_type} behavior...")
+            print(f"  [{i+1}/{len(valid_prompts)}] Generating {behavior_type} behavior...")
         prompt_key, behavior = generate_behavior_for_prompt(
             prompt, is_harmful, expected_behavior_prompts
         )

@@ -86,6 +86,7 @@ def claude_system(
     user_prompt: str,
     model: Optional[str] = None,
     max_retries: int = 3,
+    timeout: int = 120,
 ) -> str:
     """Call claude -p with a system prompt baked into the user prompt.
 
@@ -97,7 +98,7 @@ def claude_system(
 
 {user_prompt}"""
 
-    return claude_query(combined, model=model, max_retries=max_retries)
+    return claude_query(combined, model=model, max_retries=max_retries, timeout=timeout)
 
 
 def _extract_json(text: str) -> str:
@@ -319,9 +320,10 @@ def generate_expected_behavior(
     """Generate an expected model behavior using claude -p.
 
     Replaces the async anthropic SDK call in step3_generate_expected_behaviors.py.
+    Uses a shorter timeout (60s) since these are simple text generations.
     """
     try:
-        return claude_system(system_prompt, prompt_text)
+        return claude_system(system_prompt, prompt_text, max_retries=2)
     except Exception as e:
         print(f"  generate_expected_behavior failed: {e}")
         return default_response
