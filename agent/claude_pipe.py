@@ -88,13 +88,12 @@ def claude_system(
     max_retries: int = 3,
     timeout: int = 120,
 ) -> str:
-    """Call claude -p with a system prompt baked into the user prompt.
+    """Call claude -p with a system prompt prepended to the user prompt.
 
-    claude -p doesn't have a --system flag, so we prepend it.
+    Uses natural preamble instead of <system> tags, which claude -p
+    flags as prompt injection attempts.
     """
-    combined = f"""<system>
-{system_prompt}
-</system>
+    combined = f"""Instructions: {system_prompt}
 
 {user_prompt}"""
 
