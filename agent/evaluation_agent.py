@@ -245,16 +245,19 @@ Think carefully about which hypotheses are similar and which are different. Thin
         with open(latest_file, 'r') as f:
             return json.load(f)
 
-    def _parse_prompt(self, prompt: str) -> str | List[Dict[str, str]]:
+    def _parse_prompt(self, prompt: str) -> str | List[Dict[str, str]] | None:
         """Parse a prompt that might be a JSON conversation string.
+
+        Returns None for non-conversation strings (step 1 refusals, preambles)
+        that should be filtered out of the training data.
 
         Args:
             prompt: Either a plain string or a JSON string representing a conversation
 
         Returns:
-            Either the original string or a parsed list of message dicts
+            Parsed conversation list, or None if prompt is not a valid conversation
         """
-        # Try to parse as JSON
+        # Try to parse as JSON conversation
         if isinstance(prompt, str) and prompt.strip().startswith('['):
             try:
                 parsed = json.loads(prompt)
@@ -264,8 +267,8 @@ Think carefully about which hypotheses are similar and which are different. Thin
                         return parsed
             except json.JSONDecodeError:
                 pass
-        # Return as-is if not a conversation JSON
-        return prompt
+        # Non-conversation strings are refusals/junk from step 1 — filter them out
+        return None
 
     def _load_prompts_for_hypotheses(self, hypothesis_indices: List[int]) -> Tuple[List[str], List[bool], List[str], List[bool]]:
         """Load all harmful and benign prompts with their labels for given hypothesis indices.
@@ -289,27 +292,36 @@ Think carefully about which hypotheses are similar and which are different. Thin
                 print(f"Warning: Could not find results for hypothesis {h_idx}")
                 continue
 
-            # Load harmful prompts
+            # Load harmful prompts (skip non-conversation strings like step 1 refusals)
             harmful_prompts_and_results = results.get("harmful_prompts_and_results", [])
+            skipped_harmful = 0
             for item in harmful_prompts_and_results:
                 prompt = item.get("prompt", "")
                 harmful = item.get("harmful", False)
                 if prompt:
-                    # Parse prompt (might be conversation JSON)
                     parsed_prompt = self._parse_prompt(prompt)
-                    all_harmful_prompts.append(parsed_prompt)
-                    all_harmful_labels.append(harmful)
+                    if parsed_prompt is not None:
+                        all_harmful_prompts.append(parsed_prompt)
+                        all_harmful_labels.append(harmful)
+                    else:
+                        skipped_harmful += 1
 
-            # Load benign prompts
+            # Load benign prompts (skip non-conversation strings like step 1 refusals)
             benign_prompts_and_results = results.get("benign_prompts_and_results", [])
+            skipped_benign = 0
             for item in benign_prompts_and_results:
                 prompt = item.get("prompt", "")
                 harmful = item.get("harmful", False)
                 if prompt:
-                    # Parse prompt (might be conversation JSON)
                     parsed_prompt = self._parse_prompt(prompt)
-                    all_benign_prompts.append(parsed_prompt)
-                    all_benign_labels.append(harmful)
+                    if parsed_prompt is not None:
+                        all_benign_prompts.append(parsed_prompt)
+                        all_benign_labels.append(harmful)
+                    else:
+                        skipped_benign += 1
+
+            if skipped_harmful or skipped_benign:
+                print(f"  Hypothesis {h_idx}: filtered {skipped_harmful} harmful + {skipped_benign} benign non-conversation prompts")
 
         return all_harmful_prompts, all_harmful_labels, all_benign_prompts, all_benign_labels
 
